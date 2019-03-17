@@ -9,9 +9,11 @@
 #include "log.h"
 #include "thread_shared.h" 
 #include "vector.h"
+#include "cache_domains.h"
 
 int loop = 1;
 crc64_vector *statistics = 0;
+cache_domain *whitelist = 0;
 
 int create(void **args)
 {
@@ -40,6 +42,8 @@ int create(void **args)
 		return err;
 
 	createVector(&statistics, 1000);
+
+	init();
 
 	pthread_t thr_id;
 	loop = 1;
@@ -74,6 +78,34 @@ int destroy(void *args)
 	debugLog("\"%s\":\"%s\"", "message", "destroyed");
 
 	return err;
+}
+
+int init()
+{
+	FILE * fp = 0;
+	fp = fopen("crc64.dat", "rb");
+	if (!fp)
+	{
+		debugLog("\"error\":\"unable to open .dat file\"");
+		return -1;
+	}
+
+	fseek(fp, 0L, SEEK_END);
+	long sz = ftell(fp);
+	long numelem = sz / 8;
+
+	fseek(fp, 0L, SEEK_SET);
+
+	int read_result;
+	unsigned long long *buffer = (unsigned long long *)calloc(numelem, sizeof(unsigned long long));
+	char buf[8];
+	int i = 0;
+	while ((read_result = fread(buf, sizeof(unsigned long long), 1, fp)) > 0)
+	{
+		memcpy(buffer + (i++), buf, sizeof(unsigned long long));
+	}
+
+	whitelist = cache_domain_init_ex2(buffer, numelem);
 }
 
 void* threadproc(void *arg)
@@ -119,6 +151,76 @@ int increment(char *address, int *state)
 	return err;
 }
 
+int search(const char * domainToFind, struct ip_addr * userIpAddress, const char * userIpAddressString, int rrtype, char * originaldomain, char * logmessage)
+{
+	char message[2048] = {};
+	unsigned long long crc = crc64(0, (const char*)domainToFind, strlen(domainToFind));
+	debugLog("\"type\":\"search\",\"message\":\"ioc '%s' crc'%x'\"", domainToFind, crc);
+
+	domain domain_item = {};
+	if (cache_domain_contains(whitelist, crc, &domain_item, 0) == 1)
+	{
+		debugLog("\"type\":\"search\",\"message\":\"detected ioc '%s'\"", domainToFind);
+	}
+	else
+	{
+		debugLog("\"type\":\"search\",\"message\":\"cache domains does not have a match to '%s'\"", domainToFind);
+	}
+
+	return 0;
+}
+
+int explode(char * domainToFind, struct ip_addr * userIpAddress, const char * userIpAddressString, int rrtype)
+{
+	char message[2048] = { 0 };
+	char logmessage[2048] = { 0 };
+	char *ptr = domainToFind;
+	ptr += strlen(domainToFind);
+	int result = 0;
+	int found = 0;
+	while (ptr-- != (char *)domainToFind)
+	{
+		if (ptr[0] == '.')
+		{
+			if (++found > 1)
+			{
+				sprintf(message, "\"type\":\"explode\",\"message\":\"search %s\"", ptr + 1);
+				debugLog(message);
+				if ((result = search(ptr + 1, userIpAddress, userIpAddressString, rrtype, domainToFind, logmessage)) != 0)
+				{
+					if (logmessage[0] != '\0')
+					{
+						fileLog(logmessage);
+					}
+					return result;
+				}
+			}
+		}
+		else
+		{
+			if (ptr == (char *)domainToFind)
+			{
+				sprintf(message, "\"type\":\"explode\",\"message\":\"search %s\"", ptr);
+				debugLog(message);
+				if ((result = search(ptr, userIpAddress, userIpAddressString, rrtype, domainToFind, logmessage)) != 0)
+				{
+					if (logmessage[0] != '\0')
+					{
+						fileLog(logmessage);
+					}
+					return result;
+				}
+			}
+		}
+	}
+	if (logmessage[0] != '\0')
+	{
+		fileLog(logmessage);
+	}
+
+	return 0;
+}
+
 #ifdef NOKRES 
 
 static int usage()
@@ -129,6 +231,7 @@ static int usage()
 	fprintf(stdout, "set\n");
 	fprintf(stdout, "insert\n");
 	fprintf(stdout, "print\n");
+	fprintf(stdout, "load\n");
 	return 0;
 }
 
@@ -183,6 +286,11 @@ static int print()
 	return err;
 }
 
+static int load()
+{
+	return init();
+}
+
 static int userInput()
 {
 	char command[80] = { 0 };
@@ -195,6 +303,8 @@ static int userInput()
 		set();
 	else if (strcmp("insert", command) == 0)
 		insert();
+	else if (strcmp("load", command) == 0)
+		load();
 	else if (strcmp("print", command) == 0)
 		print();
 	else

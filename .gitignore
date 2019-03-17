@@ -6,3 +6,9 @@ tunlim/obj/
 tunlim/tunlim\.vcxproj\.user
 
 \.vs/
+
+pubsuflist/bin/
+
+pubsuflist/obj/
+
+*.user

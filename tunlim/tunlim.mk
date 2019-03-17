@@ -1,6 +1,7 @@
 tunlim_CFLAGS := -fvisibility=hidden -fPIC 
 tunlim_LDFLAGS := -Wl,-undefined -Wl,dynamic_lookup
 tunlim_SOURCES := \
+	modules/tunlim/cache_domains.c \
 	modules/tunlim/tunlim.c \
 	modules/tunlim/log.c \
 	modules/tunlim/program.c \

@@ -50,6 +50,92 @@ int getip(struct kr_request *request, char *address)
 	return 0;
 }
 
+int checkDomain(char * qname_Str, int * r, kr_layer_t *ctx, struct ip_addr *userIpAddress, const char *userIpAddressString)
+{
+	struct kr_request *request = (struct kr_request *)ctx->req;
+	struct kr_rplan *rplan = &request->rplan;
+
+	if (rplan->resolved.len > 0)
+	{
+		//bool sinkit = false;
+		//uint16_t rclass = 0;
+		/*struct kr_query *last = */
+		//array_tail(rplan->resolved);
+		const knot_pktsection_t *ns = knot_pkt_section(request->answer, KNOT_ANSWER);
+
+		if (ns == NULL)
+		{
+			debugLog("\"method\":\"getdomain\",\"message\":\"ns = NULL\"");
+			return -1;
+		}
+
+		if (ns->count == 0)
+		{
+			debugLog("\"method\":\"getdomain\",\"message\":\"query has no asnwer\"");
+
+			const knot_pktsection_t *au = knot_pkt_section(request->answer, KNOT_AUTHORITY);
+			for (unsigned i = 0; i < au->count; ++i)
+			{
+				const knot_rrset_t *rr = knot_pkt_rr(au, i);
+
+				if (rr->type == KNOT_RRTYPE_SOA)
+				{
+					char querieddomain[KNOT_DNAME_MAXLEN] = {};
+					knot_dname_to_str(querieddomain, rr->owner, KNOT_DNAME_MAXLEN);
+
+					int domainLen = strlen(querieddomain);
+					if (querieddomain[domainLen - 1] == '.')
+					{
+						querieddomain[domainLen - 1] = '\0';
+					}
+
+					debugLog("\"method\":\"getdomain\",\"message\":\"authority for %s\"", querieddomain);
+
+					return explode((char *)&querieddomain, userIpAddress, userIpAddressString, rr->type);
+				}
+				else
+				{
+					debugLog("\"method\":\"getdomain\",\"message\":\"authority rr type is not SOA [%d]\"", (int)rr->type);
+				}
+			}
+		}
+
+		for (unsigned i = 0; i < ns->count; ++i)
+		{
+			const knot_rrset_t *rr = knot_pkt_rr(ns, i);
+
+			if (rr->type == KNOT_RRTYPE_A || rr->type == KNOT_RRTYPE_AAAA || rr->type == KNOT_RRTYPE_CNAME)
+			{
+				char querieddomain[KNOT_DNAME_MAXLEN];
+				knot_dname_to_str(querieddomain, rr->owner, KNOT_DNAME_MAXLEN);
+
+				int domainLen = strlen(querieddomain);
+				if (querieddomain[domainLen - 1] == '.')
+				{
+					querieddomain[domainLen - 1] = '\0';
+				}
+
+				debugLog("\"method\":\"getdomain\",\"message\":\"query for %s type %d\"", querieddomain, rr->type);
+				strcpy(qname_Str, querieddomain);
+				*r = rr->type;
+				return explode((char *)&querieddomain, userIpAddress, userIpAddressString, rr->type);
+			}
+			else
+			{
+				debugLog("\"method\":\"getdomain\",\"message\":\"rr type is not A, AAAA or CNAME [%d]\"", (int)rr->type);
+			}
+		}
+	}
+	else
+	{
+		debugLog("\"method\":\"getdomain\",\"message\":\"query has no resolve plan\"");
+	}
+
+	debugLog("\"method\":\"getdomain\",\"message\":\"return\"");
+
+	return 0;
+}
+
 int begin(kr_layer_t *ctx)
 {
 	debugLog("\"%s\":\"%s\"", "debug", "begin");

@@ -32,7 +32,7 @@ RUN mkdir -p /tmp/root/usr/local/include /tmp/root/usr/local/lib /tmp/root/usr/l
 FROM debian:stable-slim AS runtime
 
 # Install runtime dependencies
-ENV KNOT_DNS_RUNTIME_DEPS libgnutls30
+ENV KNOT_DNS_RUNTIME_DEPS libgnutls30 supervisor procps
 ENV KNOT_RESOLVER_RUNTIME_DEPS liblmdb0 luajit libluajit-5.1-2 libuv1 lua-sec lua-socket
 ENV KNOT_RESOLVER_RUNTIME_DEPS_HTTP libjs-bootstrap libjs-d3 libjs-jquery lua-http lua-mmdb
 ENV KNOT_RESOLVER_RUNTIME_DEPS_EXTRA libfstrm0 lua-cqueues
@@ -45,19 +45,19 @@ RUN apt-get update -qq && \
 
 # Intermediate container for Knot Resolver build
 FROM knot-dns-build AS build
+ENV KRES_VERSION v3.2.1
 
-# Clone knot-resolver sources
+ENV BUILD_DATE 2019-02-16
 RUN git clone https://gitlab.labs.nic.cz/knot/knot-resolver.git /tmp/knot-resolver && \
-        cd /tmp/knot-resolver && \
-        git submodule update --init
+    cd /tmp/knot-resolver && git fetch --all --tags --prune && git checkout tags/$KRES_VERSION && cd /tmp/knot-resolver && \
+    git submodule update --init
 
 RUN mkdir /tmp/tunlim
 WORKDIR /tmp/tunlim
-COPY . ./
-RUN cp -a /tmp/tunlim/. /tmp/knot-resolver/modules/ && \
-        cd /tmp/knot-resolver/modules && \
-        patch -i modules.mk.patch modules.mk
-
+COPY . ./ 
+RUN cp -a /tmp/tunlim/. /tmp/knot-resolver/modules/ && \ 
+        cd /tmp/knot-resolver/modules && \ 
+        patch -i modules.mk.patch modules.mk 
 
 # Build Knot Resolver
 ARG CFLAGS="-O2 -fstack-protector -g"
@@ -72,16 +72,20 @@ RUN cd /tmp/knot-resolver && \
 
 # Final container
 FROM runtime
-MAINTAINER Knot Resolver team <knot-resolver-users@lists.nic.cz>
-
-RUN mkdir /var/log/whalebone
-COPY ./config.docker /etc/knot-resolver/
-
-# Export DNS over UDP & TCP, DNS-over-TLS, web interface
-EXPOSE 53/UDP 53/TCP 853/TCP 8053/TCP
-
-CMD ["/usr/local/sbin/kresd", "-c", "/etc/knot-resolver/config.docker"]
+LABEL cz.knot-resolver.vendor="CZ.NIC"
+LABEL maintainer="knot-resolver-users@lists.nic.cz"
 
 # Fetch Knot Resolver + Knot DNS libraries from build image
 COPY --from=build /tmp/root/ /
 RUN ldconfig
+
+WORKDIR /
+COPY "startup.sh" "/usr/local/sbin/startup.sh"
+COPY "scripts/crashfallback.py" "/usr/local/bin/crashfallback.py"
+COPY "scripts/failurerecovery.py" "/usr/local/bin/failurerecovery.py"
+RUN chmod +x /usr/local/sbin/startup.sh && mkdir /var/lib/kres
+
+# Supervisor config
+COPY "super_kres.conf" "/etc/supervisor/conf.d/kres.conf"
+
+CMD ["/usr/local/sbin/startup.sh"]
