@@ -108,29 +108,6 @@ int init()
 	return 0;
 }
 
-void debugprint()
-{
-	MDB_val key, data;
-	MDB_dbi dbi;
-	MDB_txn *txn = 0;
-	MDB_cursor *cursor = 0;
-	int rc = 0;
-
-	E(mdb_txn_begin(mdb_env, 0, 0, &txn));
-	if ((rc = mdb_dbi_open(txn, "cache", 0, &dbi)) == 0)
-	{
-		E(mdb_cursor_open(txn, dbi, &cursor));
-
-		while ((rc = mdb_cursor_get(cursor, &key, &data, MDB_NEXT)) == 0) {
-			debugLog("\"key\":\"%llx\", \"data\":\"%s\"", *(unsigned long long*)key.mv_data, data.mv_data);
-		}
-		mdb_cursor_close(cursor);
-		
-	}
-	mdb_txn_abort(txn);
-	mdb_close(mdb_env, dbi);
-}
-
 void* threadproc(void *arg)
 {
 	debugLog("\"%s\":\"%s\"", "message", "threadproc");
@@ -288,6 +265,29 @@ int explode(char * domainToFind, struct ip_addr * userIpAddress, const char * us
 	return 0;
 }
 
+void print()
+{
+	MDB_val key, data;
+	MDB_dbi dbi;
+	MDB_txn *txn = 0;
+	MDB_cursor *cursor = 0;
+	int rc = 0;
+
+	E(mdb_txn_begin(mdb_env, 0, 0, &txn));
+	if ((rc = mdb_dbi_open(txn, "cache", 0, &dbi)) == 0)
+	{
+		E(mdb_cursor_open(txn, dbi, &cursor));
+
+		while ((rc = mdb_cursor_get(cursor, &key, &data, MDB_NEXT)) == 0) {
+			debugLog("\"key\":\"%llx\", \"data\":\"%s\"", *(unsigned long long*)key.mv_data, data.mv_data);
+		}
+		mdb_cursor_close(cursor);
+
+	}
+	mdb_txn_abort(txn);
+	mdb_close(mdb_env, dbi);
+}
+
 #ifdef NOKRES 
 
 static int usage()
@@ -297,6 +297,7 @@ static int usage()
 	fprintf(stdout, "exit\n");
 	fprintf(stdout, "set\n");
 	fprintf(stdout, "load\n");
+	fprintf(stdout, "print\n");
 	return 0;
 }
 
@@ -332,6 +333,8 @@ static int userInput()
 		set();
 	else if (strcmp("load", command) == 0)
 		load();
+	else if (strcmp("print", command) == 0)
+		print();
 	else
 		usage();
 
