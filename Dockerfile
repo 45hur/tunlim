@@ -76,16 +76,18 @@ LABEL cz.knot-resolver.vendor="CZ.NIC"
 LABEL maintainer="knot-resolver-users@lists.nic.cz"
 
 # Fetch Knot Resolver + Knot DNS libraries from build image
+
+RUN mkdir /var/log/whalebone
+RUN mkdir /var/whalebone/tunlim
+COPY ./config.docker /etc/knot-resolver/
+WORKDIR /etc/knot-resolver/
+
+# Export DNS over UDP & TCP, DNS-over-TLS, web interface
+EXPOSE 53/UDP 53/TCP 853/TCP 8053/TCP
+
+CMD ["/usr/local/sbin/kresd", "-c", "/etc/knot-resolver/config.docker"]
+
+# Fetch Knot Resolver + Knot DNS libraries from build image
 COPY --from=build /tmp/root/ /
 RUN ldconfig
 
-WORKDIR /
-COPY "startup.sh" "/usr/local/sbin/startup.sh"
-COPY "scripts/crashfallback.py" "/usr/local/bin/crashfallback.py"
-COPY "scripts/failurerecovery.py" "/usr/local/bin/failurerecovery.py"
-RUN chmod +x /usr/local/sbin/startup.sh && mkdir /var/lib/kres
-
-# Supervisor config
-COPY "super_kres.conf" "/etc/supervisor/conf.d/kres.conf"
-
-CMD ["/usr/local/sbin/startup.sh"]

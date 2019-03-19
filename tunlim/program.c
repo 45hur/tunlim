@@ -128,9 +128,9 @@ int increment(const char *address, const char *domainl)
 	MDB_txn *txn = 0;
 	int rc = 0;
 	char bkey[8] = { 0 }; 
-	char value[300] = { 0 };
+	char value[2400] = { 0 };
 	
-	char combokey[280] = { 0 };
+	char combokey[2048] = { 0 };
 	sprintf((char *)&combokey, "%s:%s", address, domainl);
 
 	unsigned long long crc = crc64(0, combokey, strlen(combokey));
@@ -153,9 +153,10 @@ int increment(const char *address, const char *domainl)
 	mdb_close(mdb_env, dbi);
 
 	//Modify data
+	double entr = calc_entropy(domainl);
 	if (strlen(value) == 0)
 	{
-		sprintf((char *)&value, "%s:%s:0", address, domainl);
+		sprintf((char *)&value, "%s:%s:0:%lf\0", address, domainl, entr);
 	}
 
 	char delim[] = ":";
@@ -168,7 +169,7 @@ int increment(const char *address, const char *domainl)
 		{
 			int num = atoi(ptr);
 			num++;
-			sprintf((char *)&value, "%s:%s:%d", address, domainl, num);
+			sprintf((char *)&value, "%s:%s:%d:%lf\0", address, domainl, num, entr);
 		}
 	}
 
@@ -310,6 +311,46 @@ void stats()
 	mdb_txn_abort(txn);
 }
 
+int makehist(char *S, int *hist, int len) 
+{
+	int wherechar[256];
+	int i, histlen;
+	histlen = 0;
+	for (i = 0; i < 256; i++)wherechar[i] = -1;
+	for (i = 0; i < len; i++) {
+		if (wherechar[(int)S[i]] == -1) {
+			wherechar[(int)S[i]] = histlen;
+			histlen++;
+		}
+		hist[wherechar[(int)S[i]]]++;
+	}
+	return histlen;
+}
+
+double entropy(int *hist, int histlen, int len)
+{
+	int i;
+	double H;
+	H = 0;
+	for (i = 0; i < histlen; i++) {
+		H -= (double)hist[i] / len * log2((double)hist[i] / len);
+	}
+	return H;
+}
+
+double calc_entropy(const char * string)
+{
+	int len, *hist, histlen;
+	len = strlen(string);
+	hist = (int*)calloc(len, sizeof(int));
+	histlen = makehist(string, hist, len);
+
+	double hv = entropy(hist, histlen, len);
+	free(hist);
+	return hv;
+
+}
+
 #ifdef NOKRES 
 
 static int usage()
@@ -321,6 +362,7 @@ static int usage()
 	fprintf(stdout, "load\n");
 	fprintf(stdout, "stats\n");
 	fprintf(stdout, "print\n");
+	fprintf(stdout, "hist\n");
 	return 0;
 }
 
@@ -344,6 +386,18 @@ static int load()
 	return init();
 }
 
+static int hist()
+{
+	int err = 0;
+	char command[80] = { 0 };
+	fprintf(stdout, "\nEnter string: ");
+	scanf("%79s", command);
+
+	debugLog("%lf", calc_entropy(command));
+
+	return 0;
+}
+
 static int userInput()
 {
 	char command[80] = { 0 };
@@ -360,6 +414,8 @@ static int userInput()
 		print();
 	else if (strcmp("stats", command) == 0)
 		stats();
+	else if (strcmp("hist", command) == 0)
+		hist();
 	else
 		usage();
 
