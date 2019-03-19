@@ -224,15 +224,15 @@ int search(const char * domainToFind, struct ip_addr * userIpAddress, const char
 	int state = 0;
 	increment(userIpAddressString, domainToFind);
 
-	domain domain_item = {};
-	if (cache_domain_contains(whitelist, crc, &domain_item, 0) == 1)
-	{
-		debugLog("\"type\":\"search\",\"message\":\"detected ioc '%s'\"", domainToFind);
-	}
-	else
-	{
-		debugLog("\"type\":\"search\",\"message\":\"cache domains does not have a match to '%s'\"", domainToFind);
-	}
+	//domain domain_item = {};
+	//if (cache_domain_contains(whitelist, crc, &domain_item, 0) == 1)
+	//{
+	//	debugLog("\"type\":\"search\",\"message\":\"detected ioc '%s'\"", domainToFind);
+	//}
+	//else
+	//{
+	//	debugLog("\"type\":\"search\",\"message\":\"cache domains does not have a match to '%s'\"", domainToFind);
+	//}
 
 	return 0;
 }
