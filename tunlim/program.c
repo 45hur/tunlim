@@ -6,78 +6,76 @@
 #include <sys/types.h> 
 #include <unistd.h>
 
+#include "crc64.h"
 #include "log.h"
 #include "thread_shared.h" 
-#include "vector.h"
+#include "lmdb.h"
 #include "cache_domains.h"
 
+#define E(expr) CHECK((rc = (expr)) == MDB_SUCCESS, #expr)
+#define RES(err, expr) ((rc = expr) == (err) || (CHECK(!rc, #expr), 0))
+#define CHECK(test, msg) ((test) ? (void)0 : ((void)debugLog("%s:%d: %s: %s\n", __FILE__, __LINE__, msg, mdb_strerror(rc)), abort()))
+
 int loop = 1;
-crc64_vector *statistics = 0;
+MDB_env *mdb_env = 0;
 cache_domain *whitelist = 0;
 
 int create(void **args)
 {
-	int err = 0;
-	int fd = shm_open(C_MOD_MUTEX, O_CREAT | O_TRUNC | O_RDWR, 0600);
-	if (fd == -1)
-		return fd;
+	MDB_dbi dbi;
+	MDB_txn *txn = 0;
+	int rc = 0;
+	//int fd = shm_open(C_MOD_MUTEX, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	//if (fd == -1)
+	//	return fd;
 
-	if ((err = ftruncate(fd, sizeof(struct shared))) != 0)
-		return err;
+	//E(ftruncate(fd, sizeof(struct shared)));
 
-	thread_shared = (struct shared*)mmap(0, sizeof(struct shared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (thread_shared == NULL)
-		return -1;
+	//thread_shared = (struct shared*)mmap(0, sizeof(struct shared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	//if (thread_shared == NULL)
+	//	return -1;
+	//thread_shared->sharedResource = 0;
+	
+	E(mdb_env_create(&mdb_env));
+	E(mdb_env_set_maxreaders(mdb_env, 16));
+	E(mdb_env_set_maxdbs(mdb_env, 4));
+	size_t max = 1073741824;
+	E(mdb_env_set_mapsize(mdb_env, max)); //1GB
+	E(mdb_env_open(mdb_env, "/var/whalebone/tunlim", /*MDB_FIXEDMAP | MDB_NOSYNC*/ 0, 0664));
 
-	thread_shared->sharedResource = 0;
-
-	pthread_mutexattr_t shared;
-	if ((err = pthread_mutexattr_init(&shared)) != 0)
-		return err;
-
-	if ((err = pthread_mutexattr_setpshared(&shared, PTHREAD_PROCESS_SHARED)) != 0)
-		return err;
-
-	if ((err = pthread_mutex_init(&(thread_shared->mutex), &shared)) != 0)
-		return err;
-
-	createVector(&statistics, 1000);
+	E(mdb_txn_begin(mdb_env, 0, 0, &txn));
+	E(mdb_dbi_open(txn, "cache", MDB_CREATE, &dbi));
+	E(mdb_txn_commit(txn));
+	mdb_close(mdb_env, dbi);
 
 	init();
 
 	pthread_t thr_id;
 	loop = 1;
-	if ((err = pthread_create(&thr_id, NULL, &threadproc, NULL)) != 0)
-		return err;
+	E(pthread_create(&thr_id, NULL, &threadproc, NULL));
 
 	*args = (void *)thr_id;
 
 	debugLog("\"%s\":\"%s\"", "message", "created");
 
-	return err;
+	return 0;
 }
 
 int destroy(void *args)
 {
+	int rc = 0;
 	loop = 0;
 
-	int err = 0;
-	if ((err = munmap(thread_shared, sizeof(struct shared*))) == 0)
-		return err;
-
-	if ((err = shm_unlink(C_MOD_MUTEX)) == 0)
-		return err;
-
-	destroyVector(statistics);
+	mdb_env_close(mdb_env);
+	mdb_env = NULL;
 
 	void *res = NULL;
 	pthread_t thr_id = (pthread_t)args;
-	if ((err = pthread_join(thr_id, res)) != 0)
-		return err;
+	E(pthread_join(thr_id, res));
 
-	debugLog("\"%s\":\"%s\"", "message", "destroyed");
+	debugLog("\"%s\":\"%s\"", "message", "successfully destroyed");
 
-	return err;
+	return 0;
 }
 
 int init()
@@ -106,56 +104,84 @@ int init()
 	}
 
 	whitelist = cache_domain_init_ex2(buffer, numelem);
+
+	return 0;
+}
+
+void debugprint()
+{
+	MDB_val key, data;
+	MDB_dbi dbi;
+	MDB_txn *txn = 0;
+	MDB_cursor *cursor = 0;
+	int rc = 0;
+
+	E(mdb_txn_begin(mdb_env, 0, 0, &txn));
+	if ((rc = mdb_dbi_open(txn, "cache", 0, &dbi)) == 0)
+	{
+		E(mdb_cursor_open(txn, dbi, &cursor));
+
+		while ((rc = mdb_cursor_get(cursor, &key, &data, MDB_NEXT)) == 0) {
+			debugLog("\"key\":\"%llx\", \"data\":\"%s\"", *(unsigned long long*)key.mv_data, data.mv_data);
+		}
+		mdb_cursor_close(cursor);
+		
+	}
+	mdb_txn_abort(txn);
+	mdb_close(mdb_env, dbi);
 }
 
 void* threadproc(void *arg)
 {
 	debugLog("\"%s\":\"%s\"", "message", "threadproc");
-	int i = 0;
 	while (loop)
 	{
-		i++;
-		if (i % 5 == 0)
-		{
-			debugLog("\"%s\":\"%s\"", "message", "stats reset");
+		//debugprint();
 
-			pthread_mutex_lock(&(thread_shared->mutex));
-			
-			vectorReset(statistics);
-
-			pthread_mutex_unlock(&(thread_shared->mutex));
-		}
-		vectorPrint(statistics);
-
-		sleep(1);
+		sleep(5);
 	}
 
 	return NULL;
 }
 
-int increment(char *address, int *state)
+int increment(const char *address, const char *domainl, int *state)
 {
-	pthread_mutex_lock(&(thread_shared->mutex));
-	int err = 0;
-	if ((err = vectorIncrement(&statistics, address)) != 0)
-	{
-		*state = state_none;
-	}
-	else
-	{
-		*state = vectorIsItemBlocked(statistics, address);
-	}
+	MDB_dbi dbi;
+	MDB_val key, data;
+	MDB_txn *txn = 0;
+	int rc = 0;
+	char bkey[8] = { 0 }; 
+	char value[280] = { 0 };
+	sprintf((char *)&value, "%s:%s", address, domainl);
+	
+	unsigned long long crc = crc64(0, address, strlen(address));
+	memcpy(&bkey, &crc, 8);
 
-	pthread_mutex_unlock(&(thread_shared->mutex));
+	E(mdb_txn_begin(mdb_env, NULL, 0, &txn));
+	E(mdb_dbi_open(txn, "cache", 0, &dbi));
 
-	return err;
+	key.mv_size = sizeof(unsigned long long);
+	key.mv_data = (void *)bkey;
+	data.mv_size = strlen(value);
+	data.mv_data = (void *)value;
+
+	E(mdb_put(txn, dbi, &key, &data, 0));
+	
+	E(mdb_txn_commit(txn));
+	mdb_close(mdb_env, dbi);
+
+	debugprint();
+
+	return 0;
 }
 
 int search(const char * domainToFind, struct ip_addr * userIpAddress, const char * userIpAddressString, int rrtype, char * originaldomain, char * logmessage)
 {
-	char message[2048] = {};
 	unsigned long long crc = crc64(0, (const char*)domainToFind, strlen(domainToFind));
 	debugLog("\"type\":\"search\",\"message\":\"ioc '%s' crc'%x'\"", domainToFind, crc);
+
+	int state = 0;
+	increment(userIpAddressString, domainToFind, &state);
 
 	domain domain_item = {};
 	if (cache_domain_contains(whitelist, crc, &domain_item, 0) == 1)
@@ -229,8 +255,6 @@ static int usage()
 	fprintf(stdout, "\n");
 	fprintf(stdout, "exit\n");
 	fprintf(stdout, "set\n");
-	fprintf(stdout, "insert\n");
-	fprintf(stdout, "print\n");
 	fprintf(stdout, "load\n");
 	return 0;
 }
@@ -246,45 +270,10 @@ static int set()
 	fprintf(stdout, "\nEnter value: ");
 	scanf("%79s", command);
 
-	if ((err = vectorIncrement(&statistics, command)) == 0)
-	{
-		fprintf(stdout, "\nAddress %s incremented.", command);
-	}
-	else
-	{
-		fprintf(stdout, "\nAddress %s not incremented.", command);
-	}
-
-	return err;
+	int state = 0;
+	return increment(ip, command, &state);
 }
 
-static int insert()
-{
-	int err = 0;
-	char command[80] = { 0 };
-	fprintf(stdout, "\nEnter ip address: ");
-	scanf("%79s", command);
-
-	if ((err = vectorAdd(&statistics, command)) == 0)
-	{
-		fprintf(stdout, "\nAddress %s added.", command);
-	}
-	else
-	{
-		fprintf(stdout, "\nAddress %s not added.", command);
-	}
-
-	return err;
-}
-
-static int print()
-{
-	int err = 0;
-
-	vectorPrint(statistics);
-
-	return err;
-}
 
 static int load()
 {
@@ -301,12 +290,8 @@ static int userInput()
 		return 0;
 	else if (strcmp("set", command) == 0)
 		set();
-	else if (strcmp("insert", command) == 0)
-		insert();
 	else if (strcmp("load", command) == 0)
 		load();
-	else if (strcmp("print", command) == 0)
-		print();
 	else
 		usage();
 

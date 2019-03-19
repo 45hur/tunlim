@@ -79,13 +79,15 @@
   <ItemGroup>
     <ClCompile Include="cache_domains.c" />
     <ClCompile Include="log.c" />
+    <ClCompile Include="mdb.c" />
+    <ClCompile Include="midl.c" />
     <ClCompile Include="program.c" />
     <ClCompile Include="tunlim.c" />
-    <ClCompile Include="vector.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cache_domains.h" />
-    <ClInclude Include="vector.h" />
+    <ClInclude Include="lmdb.h" />
+    <ClInclude Include="midl.h" />
     <ClInclude Include="crc64.h" />
     <ClInclude Include="log.h" />
     <ClInclude Include="program.h" />

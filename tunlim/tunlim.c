@@ -3,14 +3,15 @@
 #include "log.h"
 #include "program.h"
 #include "tunlim.h"
-#include "vector.h"
 
 #ifndef NOKRES
 
 #include <arpa/inet.h>
 
-int getip(struct kr_request *request, char *address)
+int getip(kr_layer_t *ctx, char *address, struct ip_addr *req_addr)
 {
+	struct kr_request *request = (struct kr_request *)ctx->req;
+
 	if (!request->qsource.addr) {
 		debugLog("\"%s\":\"%s\"", "error", "no source address");
 
@@ -18,25 +19,24 @@ int getip(struct kr_request *request, char *address)
 	}
 
 	const struct sockaddr *res = request->qsource.addr;
-	struct ip_addr origin = { 0 };
-	bool ipv4 = true;
+	//bool ipv4 = true;
 	switch (res->sa_family)
 	{
 	case AF_INET:
 	{
 		struct sockaddr_in *addr_in = (struct sockaddr_in *)res;
 		inet_ntop(AF_INET, &(addr_in->sin_addr), address, INET_ADDRSTRLEN);
-		origin.family = AF_INET;
-		memcpy(&origin.ipv4_sin_addr, &(addr_in->sin_addr), 4);
+		req_addr->family = AF_INET;
+		memcpy(&req_addr->ipv4_sin_addr, &(addr_in->sin_addr), 4);
 		break;
 	}
 	case AF_INET6:
 	{
 		struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)res;
 		inet_ntop(AF_INET6, &(addr_in6->sin6_addr), address, INET6_ADDRSTRLEN);
-		origin.family = AF_INET6;
-		memcpy(&origin.ipv6_sin_addr, &(addr_in6->sin6_addr), 16);
-		ipv4 = false;
+		req_addr->family = AF_INET6;
+		memcpy(&req_addr->ipv6_sin_addr, &(addr_in6->sin6_addr), 16);
+		//ipv4 = false;
 		break;
 	}
 	default:
@@ -136,41 +136,132 @@ int checkDomain(char * qname_Str, int * r, kr_layer_t *ctx, struct ip_addr *user
 	return 0;
 }
 
+int parse_addr_str(struct sockaddr_storage *sa, const char *addr)
+{
+	int family = strchr(addr, ':') ? AF_INET6 : AF_INET;
+	memset(sa, 0, sizeof(struct sockaddr_storage));
+	sa->ss_family = family;
+	char *addr_bytes = (char *)kr_inaddr((struct sockaddr *)sa);
+	if (inet_pton(family, addr, addr_bytes) < 1)
+	{
+		return kr_error(EILSEQ);
+	}
+	return 0;
+}
+
+int redirect(kr_layer_t *ctx, int rrtype, const char * originaldomain)
+{
+	struct kr_request *request = (struct kr_request *)ctx->req;
+	struct kr_rplan *rplan = &request->rplan;
+	struct kr_query *last = array_tail(rplan->resolved);
+
+	if (rrtype == KNOT_RRTYPE_A || rrtype == KNOT_RRTYPE_AAAA)
+	{
+		uint16_t msgid = knot_wire_get_id(request->answer->wire);
+		kr_pkt_recycle(request->answer);
+
+		knot_pkt_put_question(request->answer, last->sname, last->sclass, last->stype);
+
+		knot_pkt_begin(request->answer, KNOT_ANSWER); //AUTHORITY?
+
+		struct sockaddr_storage sinkhole;
+		if (rrtype == KNOT_RRTYPE_A)
+		{
+			const char *sinkit_sinkhole = getenv("SINKIP");
+			if (sinkit_sinkhole == NULL || strlen(sinkit_sinkhole) == 0)
+			{
+				sinkit_sinkhole = "0.0.0.0";
+			}
+
+			//iprange iprange_item = {};
+			//if (cache_iprange_contains(cached_iprange_slovakia, origin, &iprange_item) == 1)
+			//{
+			//	debugLog("\"message\":\"origin matches slovakia\"");
+			//	sinkit_sinkhole = "194.228.41.77";
+			//}
+			//else
+			//{
+			//	debugLog("\"message\":\"origin does not match slovakia\"");
+			//}
+
+			if (parse_addr_str(&sinkhole, sinkit_sinkhole) != 0)
+			{
+				return kr_error(EINVAL);
+			}
+		}
+		else if (rrtype == KNOT_RRTYPE_AAAA)
+		{
+			const char *sinkit_sinkhole = getenv("SINKIPV6");
+			if (sinkit_sinkhole == NULL || strlen(sinkit_sinkhole) == 0)
+			{
+				sinkit_sinkhole = "0000:0000:0000:0000:0000:0000:0000:0001";
+			}
+			if (parse_addr_str(&sinkhole, sinkit_sinkhole) != 0)
+			{
+				return kr_error(EINVAL);
+			}
+		}
+
+		size_t addr_len = kr_inaddr_len((struct sockaddr *)&sinkhole);
+		const uint8_t *raw_addr = (const uint8_t *)kr_inaddr((struct sockaddr *)&sinkhole);
+
+		knot_wire_set_id(request->answer->wire, msgid);
+
+		kr_pkt_put(request->answer, last->sname, 1, KNOT_CLASS_IN, rrtype, raw_addr, addr_len);
+	}
+	else if (rrtype == KNOT_RRTYPE_CNAME)
+	{
+		uint8_t buff[KNOT_DNAME_MAXLEN];
+		knot_dname_t *dname = knot_dname_from_str(buff, originaldomain, sizeof(buff));
+		if (dname == NULL) {
+			return KNOT_EINVAL;
+		}
+
+		uint16_t msgid = knot_wire_get_id(request->answer->wire);
+		kr_pkt_recycle(request->answer);
+
+		knot_pkt_put_question(request->answer, dname, KNOT_CLASS_IN, KNOT_RRTYPE_A);
+		knot_pkt_begin(request->answer, KNOT_ANSWER);
+
+		struct sockaddr_storage sinkhole;
+		const char *sinkit_sinkhole = getenv("SINKIP");
+		if (sinkit_sinkhole == NULL || strlen(sinkit_sinkhole) == 0)
+		{
+			sinkit_sinkhole = "0.0.0.0";
+		}
+
+		//iprange iprange_item = {};
+		//if (cache_iprange_contains(cached_iprange_slovakia, origin, &iprange_item) == 1)
+		//{
+		//	sprintf(message, "\"message\":\"origin matches slovakia\"");
+		//	logtosyslog(message);
+		//	sinkit_sinkhole = "194.228.41.77";
+		//}
+		//else
+		//{
+		//	sprintf(message, "\"message\":\"origin does not match slovakia\"");
+		//	logtosyslog(message);
+		//}
+
+		if (parse_addr_str(&sinkhole, sinkit_sinkhole) != 0)
+		{
+			return kr_error(EINVAL);
+		}
+
+		size_t addr_len = kr_inaddr_len((struct sockaddr *)&sinkhole);
+		const uint8_t *raw_addr = (const uint8_t *)kr_inaddr((struct sockaddr *)&sinkhole);
+
+		knot_wire_set_id(request->answer->wire, msgid);
+
+		kr_pkt_put(request->answer, dname, 1, KNOT_CLASS_IN, KNOT_RRTYPE_A, raw_addr, addr_len);
+	}
+
+	return KR_STATE_DONE;
+}
+
 int begin(kr_layer_t *ctx)
 {
 	debugLog("\"%s\":\"%s\"", "debug", "begin");
-
-	struct kr_request *request = (struct kr_request *)ctx->req;
-	struct kr_rplan *rplan = &request->rplan;
-	char address[256] = { 0 };
-	int err = 0;
-
-	if ((err = getip(request, (char *)address)) != 0)
-	{
-		//return err; generates log message --- [priming] cannot resolve '.' NS, next priming query in 10 seconds
-		//we do not care about no address sources
-		debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "error", "begin", "getip", err);
-
-		return ctx->state;
-	}
-
-	int state = 0;
-	if ((err = increment(address, &state)) != 0)
-	{
-		debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "error", "begin", "increment", err);
-		return err;
-	}
-
-	if (state == state_limited)
-	{
-		debugLog("\"%s\":\"%s\",\"%s\":\"%x\",\"%s\":\"%s\"", "debug", "begin", "state", state, "requested", "tcp");
-		request->current_query->flags.TCP = true;
-	} 
-	else if (state == state_quarantined)
-	{
-		debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "debug", "begin", "state", state);
-		return KR_STATE_FAIL;
-	}
 
 	return ctx->state;
 }
@@ -179,47 +270,6 @@ int consume(kr_layer_t *ctx, knot_pkt_t *pkt)
 {
 	debugLog("\"%s\":\"%s\"", "debug", "consume");
 	
-	struct kr_request *request = (struct kr_request *)ctx->req;
-	struct kr_rplan *rplan = &request->rplan;
-
-	char address[256] = { 0 };
-	int err = 0;
-
-	if ((err = getip(request, (char *)address)) != 0)
-	{
-		//return err; generates log message --- [priming] cannot resolve '.' NS, next priming query in 10 seconds
-		//we do not care about no address sources
-		debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "error", "consume", "getip", err);
-
-		return ctx->state;
-	}
-
-	int isblocked = 0;
-	if ((err = increment(address, &isblocked)) != 0)
-	{
-		debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "error", "consume", "increment", err);
-		return err;
-	}
-
-	struct kr_query *qry = array_tail(rplan->pending);
-	
-	if (qry->flags.TCP)
-	{
-		if (isblocked == 1)
-		{
-			debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "debug", "consume", "isblocked-tcp", isblocked);
-
-			return KR_STATE_FAIL;
-		}
-	}
-	else if (isblocked == 1)
-	{
-		debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "debug", "consume", "isblocked", isblocked);
-
-		qry->flags.TCP = true;
-		return KR_STATE_PRODUCE;
-	}
-
 	return ctx->state;
 }
 
@@ -233,6 +283,35 @@ int produce(kr_layer_t *ctx, knot_pkt_t *pkt)
 int finish(kr_layer_t *ctx)
 {
 	debugLog("\"%s\":\"%s\"", "debug", "finish");
+
+	char address[256] = { 0 };
+	struct ip_addr userIpAddress = { 0 };
+	int err = 0;
+
+	if ((err = getip(ctx, (char *)&address, &userIpAddress)) != 0)
+	{
+		//return err; generates log message --- [priming] cannot resolve '.' NS, next priming query in 10 seconds
+		//we do not care about no address sources
+		debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "error", "begin", "getip", err);
+
+		return ctx->state;
+	}
+
+	char qname_str[KNOT_DNAME_MAXLEN] = { 0 };
+	int rr = 0;
+	if ((err = checkDomain((char *)&qname_str, &rr, ctx, &userIpAddress, (char *)&address)) != 0)
+	{
+		if (err == 1) //redirect
+		{
+			debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "error", "finish", "redirect", err);
+			return redirect(ctx, rr, (char *)&address);
+		}
+		else
+		{
+			debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "error", "finish", "getdomain", err);
+			ctx->state = KR_STATE_FAIL;
+		}
+	}
 
 	return ctx->state;
 }
@@ -253,10 +332,9 @@ const kr_layer_api_t *tunlim_layer(struct kr_module *module) {
 KR_EXPORT 
 int tunlim_init(struct kr_module *module)
 {
-	pthread_t thr_id;
 	int err = 0;
-
 	void *args = NULL;
+
 	if ((err = create(&args)) != 0)
 	{
 		debugLog("\"%s\":\"%s\",\"%s\":\"%x\"", "error", "tunlim_init", "create", err);

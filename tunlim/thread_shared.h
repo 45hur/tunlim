@@ -1,8 +1,11 @@
 #pragma once
 
+#include <pthread.h>
+#include <sys/types.h>
+
 struct shared
 {
-	pthread_mutex_t mutex;
+	//pthread_mutex_t mutex;
 	int sharedResource;
 };
 
