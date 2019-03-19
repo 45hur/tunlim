@@ -126,7 +126,6 @@ int increment(const char *address, const char *domainl)
 	MDB_dbi dbi;
 	MDB_val key, data;
 	MDB_txn *txn = 0;
-	MDB_cursor *cursor = 0;
 	int rc = 0;
 	char bkey[8] = { 0 }; 
 	char value[300] = { 0 };
@@ -141,17 +140,13 @@ int increment(const char *address, const char *domainl)
 	E(mdb_txn_begin(mdb_env, 0, 0, &txn));
 	if ((rc = mdb_dbi_open(txn, "cache", 0, &dbi)) == 0)
 	{
-		E(mdb_cursor_open(txn, dbi, &cursor));
-		
 		key.mv_size = sizeof(unsigned long long);
 		key.mv_data = (void *)bkey;
 
-		if ((rc = mdb_cursor_get(cursor, &key, &data, MDB_SET)) == 0)
+		if ((rc = mdb_get(txn, dbi, &key, &data)) == 0)
 		{
 			memcpy(&value, data.mv_data, data.mv_size);
 		}
-
-		mdb_cursor_close(cursor);
 	}
 	mdb_txn_abort(txn);
 	txn = 0;
@@ -198,7 +193,6 @@ int search(const char * domainToFind, struct ip_addr * userIpAddress, const char
 	unsigned long long crc = crc64(0, (const char*)domainToFind, strlen(domainToFind));
 	debugLog("\"type\":\"search\",\"message\":\"ioc '%s' crc'%x'\"", domainToFind, crc);
 
-	int state = 0;
 	increment(userIpAddressString, domainToFind);
 
 	//domain domain_item = {};
@@ -284,8 +278,36 @@ void print()
 		mdb_cursor_close(cursor);
 
 	}
-	mdb_txn_abort(txn);
 	mdb_close(mdb_env, dbi);
+	mdb_txn_abort(txn);
+}
+
+static void prstat(MDB_stat *ms)
+{
+	debugLog("  Page size: %u", ms->ms_psize);
+	debugLog("  Tree depth: %u", ms->ms_depth);
+	debugLog("  Branch pages: %u", ms->ms_branch_pages);
+	debugLog("  Leaf pages: %u", ms->ms_leaf_pages);
+	debugLog("  Overflow pages: %u", ms->ms_overflow_pages);
+	debugLog("  Entries: %u", ms->ms_entries);
+}
+
+void stats()
+{
+	int rc = 0;
+	MDB_stat stat;
+	E(mdb_env_stat(mdb_env, &stat));
+	prstat(&stat);
+
+	MDB_dbi dbi;
+	MDB_txn *txn = 0;
+	E(mdb_txn_begin(mdb_env, 0, 0, &txn));
+	E(mdb_dbi_open(txn, "cache", 0, &dbi));
+	E(mdb_stat(txn, dbi, &stat));
+	prstat(&stat);
+
+	mdb_close(mdb_env, dbi);
+	mdb_txn_abort(txn);
 }
 
 #ifdef NOKRES 
@@ -297,6 +319,7 @@ static int usage()
 	fprintf(stdout, "exit\n");
 	fprintf(stdout, "set\n");
 	fprintf(stdout, "load\n");
+	fprintf(stdout, "stats\n");
 	fprintf(stdout, "print\n");
 	return 0;
 }
@@ -335,6 +358,8 @@ static int userInput()
 		load();
 	else if (strcmp("print", command) == 0)
 		print();
+	else if (strcmp("stats", command) == 0)
+		stats();
 	else
 		usage();
 
