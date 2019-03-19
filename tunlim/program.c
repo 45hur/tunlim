@@ -144,33 +144,74 @@ void* threadproc(void *arg)
 	return NULL;
 }
 
-int increment(const char *address, const char *domainl, int *state)
+int increment(const char *address, const char *domainl)
 {
 	MDB_dbi dbi;
 	MDB_val key, data;
 	MDB_txn *txn = 0;
+	MDB_cursor *cursor = 0;
 	int rc = 0;
 	char bkey[8] = { 0 }; 
-	char value[280] = { 0 };
-	sprintf((char *)&value, "%s:%s", address, domainl);
+	char value[300] = { 0 };
 	
-	unsigned long long crc = crc64(0, address, strlen(address));
+	char combokey[280] = { 0 };
+	sprintf((char *)&combokey, "%s:%s", address, domainl);
+
+	unsigned long long crc = crc64(0, combokey, strlen(combokey));
 	memcpy(&bkey, &crc, 8);
 
-	E(mdb_txn_begin(mdb_env, NULL, 0, &txn));
-	E(mdb_dbi_open(txn, "cache", 0, &dbi));
+	//Get data, if any
+	E(mdb_txn_begin(mdb_env, 0, 0, &txn));
+	if ((rc = mdb_dbi_open(txn, "cache", 0, &dbi)) == 0)
+	{
+		E(mdb_cursor_open(txn, dbi, &cursor));
+		
+		key.mv_size = sizeof(unsigned long long);
+		key.mv_data = (void *)bkey;
 
+		if ((rc = mdb_cursor_get(cursor, &key, &data, MDB_SET)) == 0)
+		{
+			memcpy(&value, data.mv_data, data.mv_size);
+		}
+
+		mdb_cursor_close(cursor);
+	}
+	mdb_txn_abort(txn);
+	txn = 0;
+	mdb_close(mdb_env, dbi);
+
+	//Modify data
+	if (strlen(value) == 0)
+	{
+		sprintf((char *)&value, "%s:%s:0", address, domainl);
+	}
+
+	char delim[] = ":";
+	char *ptr = strtok(value, delim);
+	ptr = strtok(NULL, delim);
+	if (ptr)
+	{
+		ptr = strtok(NULL, delim);
+		if (ptr)
+		{
+			int num = atoi(ptr);
+			num++;
+			sprintf((char *)&value, "%s:%s:%d", address, domainl, num);
+		}
+	}
+
+	//Update data
+	txn = 0;
+	E(mdb_txn_begin(mdb_env, 0, 0, &txn)); 
+	E(mdb_dbi_open(txn, "cache", 0, &dbi));
 	key.mv_size = sizeof(unsigned long long);
 	key.mv_data = (void *)bkey;
 	data.mv_size = strlen(value);
 	data.mv_data = (void *)value;
-
 	E(mdb_put(txn, dbi, &key, &data, 0));
-	
+
 	E(mdb_txn_commit(txn));
 	mdb_close(mdb_env, dbi);
-
-	debugprint();
 
 	return 0;
 }
@@ -181,7 +222,7 @@ int search(const char * domainToFind, struct ip_addr * userIpAddress, const char
 	debugLog("\"type\":\"search\",\"message\":\"ioc '%s' crc'%x'\"", domainToFind, crc);
 
 	int state = 0;
-	increment(userIpAddressString, domainToFind, &state);
+	increment(userIpAddressString, domainToFind);
 
 	domain domain_item = {};
 	if (cache_domain_contains(whitelist, crc, &domain_item, 0) == 1)
@@ -270,8 +311,7 @@ static int set()
 	fprintf(stdout, "\nEnter value: ");
 	scanf("%79s", command);
 
-	int state = 0;
-	return increment(ip, command, &state);
+	return increment(ip, command);
 }
 
 
