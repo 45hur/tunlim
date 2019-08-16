@@ -192,7 +192,7 @@ int increment(const char *address, const char *domainl)
 int search(const char * domainToFind, struct ip_addr * userIpAddress, const char * userIpAddressString, int rrtype, char * originaldomain, char * logmessage)
 {
 	unsigned long long crc = crc64(0, (const char*)domainToFind, strlen(domainToFind));
-	debugLog("\"type\":\"search\",\"message\":\"ioc '%s' crc'%x'\"", domainToFind, crc);
+	debugLog("\"type\":\"search\",\"message\":\"ioc '%s' crc'%llx'\"", domainToFind, crc);
 
 	increment(userIpAddressString, domainToFind);
 
